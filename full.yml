@@ -1,0 +1,126 @@
+# This workflow will install Python dependencies and run tests on
+# windows and linux systems with a variety of Python versions
+
+# For more information see:
+# https://help.github.com/actions/language-and-framework-guides/using-python-with-github-actions
+
+name: build
+
+# This workflow installs the package and its dependencies, runs tests, submits
+# coverage reports. On tagged commits it will create a github release and
+# call setup.py dist and upload the distribution packages to pypi.
+
+env:
+  # RELEASE_ACCOUNT: Only tagged commits in repo under this account are published
+  RELEASE_ACCOUNT: 'wpreimes'
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: '0 0 * * *' # daily
+
+jobs:
+  build:
+    name: Build py${{ matrix.python-version }} @ ${{ matrix.os }} 🐍
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        python-version: ['3.6', '3.7']
+        os: ["ubuntu-latest", "windows-latest"]
+
+    steps:
+      - uses: actions/checkout@v2
+        with:
+          submodules: true
+      - uses: conda-incubator/setup-miniconda@v2.0.1
+        with:
+          miniconda-version: "latest"
+          auto-update-conda: true
+          python-version: ${{ matrix.python-version }}
+          environment-file: ./environment.yml
+          activate-environment: ismn # must match with name: in yml (if name is set)
+          auto-activate-base: false
+      - name: Print environment infos
+        shell: bash -l {0}
+        run: |
+          conda info -a
+          conda list
+          pip list
+          which pip
+          which python
+      - name: Install package and test
+        shell: bash -l {0}
+        run: |
+          python setup.py install
+          python setup.py test
+      - name: Upload Coverage
+        shell: bash -l {0}
+        run: |
+          pip install coveralls && coveralls
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COVERALLS_FLAG_NAME: ${{ matrix.python-version }}
+          COVERALLS_PARALLEL: true
+  coveralls:
+    name: Submit Coveralls 👚
+    needs: build
+    runs-on: ubuntu-latest
+    container: python:3-slim
+    steps:
+      - name: Finished
+        run: |
+          pip3 install --upgrade coveralls && coveralls --finish
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  release:
+    name: Create Package Release 📦
+    # needs original repo (TUW-GEO) and tagged commit (v*), skipped if release triggered manually
+    if: startsWith(github.ref, 'refs/tags/v') && startsWith(github.repository, '$RELEASE_ACCOUNT/')
+    needs: coveralls
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions/create-release@v1
+        env:on:
+          release:
+            types: [published]
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${GITHUB_REF#refs/tags/}
+          release_name: ${GITHUB_REF#refs/tags/}
+          owner: $RELEASE_ACCOUNT
+          body_path: ./CHANGELOG.rst
+          draft: false
+          prerelease: false
+  publish:
+    name: Upload to Pypi 🚀
+    # needs original repo (TUW-GEO) and tagged commit (v*)
+    if: startsWith(github.ref, 'refs/tags/v') && startsWith(github.repository, '$RELEASE_ACCOUNT/')
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.ref }}
+      - name: Set up Python
+        uses: actions/setup-python@v2
+        with:
+          python-version: 3.x
+      - name: Build
+        shell: bash -l {0}
+        run: |
+          python setup.py --version
+          python setup.py sdist
+          pip install wheel && python setup.py bdist_wheel
+      - name: Publish distribution to Test PyPI
+        uses: pypa/gh-action-pypi-publish@v1.4.1
+        with:
+          skip_existing: true
+          verbose: true
+          verify_metadata: true
+          packages_dir: dist/
+          user: __token__
+          password: ${{ secrets.TEST_PYPI_API_TOKEN }} # todo: change token for real pypi in github actions secrets of the repo
+          repository_url: https://test.pypi.org/legacy/ # todo: delete for real pypi
